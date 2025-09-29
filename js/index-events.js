@@ -1,15 +1,27 @@
 // Index Events - Handles events specific to index.html
+console.log('index-events.js loaded successfully');
+
+// Global function to focus search input when clicking wrapper
+function focusSearchInput() {
+    const searchInput = document.getElementById('searchInput');
+    if (searchInput) {
+        searchInput.focus();
+    }
+}
 
 class IndexPageManager {
     constructor() {
         this.currentFilter = 'agents';
         this.currentCategoryFilter = 'all';
+        this.currentSort = 'downloads'; // Default sort by downloads
         this.templatesData = null;
         this.componentsData = null;
         this.availableCategories = {
             agents: new Set(),
             commands: new Set(),
             mcps: new Set(),
+            settings: new Set(),
+            hooks: new Set(),
             templates: new Set()
         };
         
@@ -50,32 +62,84 @@ class IndexPageManager {
 
     async init() {
         try {
-            // Load both templates and components data
-            await Promise.all([
-                this.loadTemplatesData(),
-                this.loadComponentsData()
-            ]);
-            
+            // Setup event listeners first (they don't depend on data)
             this.setupEventListeners();
+            
+            // Show loading state
+            this.showLoadingState(true);
+            
+            // Load all components and templates at once
+            await this.loadComponentsData();
+            await this.loadTemplatesData();
+            
+            // Display components
             this.displayCurrentFilter();
+            
         } catch (error) {
             console.error('Error initializing index page:', error);
             this.showError('Failed to load data. Please refresh the page.');
+        } finally {
+            this.showLoadingState(false);
         }
     }
 
     async loadTemplatesData() {
         try {
+            // Templates are now loaded from components.json, not GitHub
             this.templatesData = await window.dataLoader.loadTemplates();
+            
+            // Update display if templates were found
+            if (this.templatesData && Object.keys(this.templatesData).length > 0) {
+                this.displayCurrentFilter();
+            }
         } catch (error) {
-            console.error('Error loading templates:', error);
-            // Continue without templates - show only components
+            console.warn('Templates not available in components.json:', error);
+            // Continue without templates - this is not critical
         }
     }
 
     async loadComponentsData() {
-        this.componentsData = await window.dataLoader.loadComponents();
-        this.collectAvailableCategories();
+        try {
+            // Load all components at once - the performance issue was mostly due to GitHub fetching
+            // Now that we only use components.json, we can load all data safely
+            this.componentsData = await window.dataLoader.loadAllComponents();
+            this.collectAvailableCategories();
+        } catch (error) {
+            console.error('Error loading components:', error);
+            // Use fallback data
+            this.componentsData = window.dataLoader.getFallbackComponentData();
+            this.collectAvailableCategories();
+        }
+    }
+    
+    // This method is no longer needed since we load all components at once
+    // Kept for backward compatibility but does nothing
+    async loadMoreComponentsInBackground() {
+        // No-op: All components are now loaded in the initial request
+        console.log('All components loaded in initial request - background loading not needed');
+    }
+    
+    // Check if data object is empty
+    isDataEmpty(data) {
+        return !data || ((!data.agents || data.agents.length === 0) &&
+                         (!data.commands || data.commands.length === 0) &&
+                         (!data.mcps || data.mcps.length === 0) &&
+                         (!data.settings || data.settings.length === 0) &&
+                         (!data.hooks || data.hooks.length === 0));
+    }
+    
+    // Show/hide loading state
+    showLoadingState(isLoading) {
+        const loadingElements = document.querySelectorAll('.loading-indicator, .loading-spinner');
+        const contentElements = document.querySelectorAll('#unifiedGrid, .filter-controls');
+        
+        loadingElements.forEach(el => {
+            el.style.display = isLoading ? 'flex' : 'none';
+        });
+        
+        contentElements.forEach(el => {
+            el.style.opacity = isLoading ? '0.7' : '1';
+        });
     }
 
     setupEventListeners() {
@@ -212,7 +276,40 @@ class IndexPageManager {
             });
         }
         
+        // Apply sorting
+        components = this.sortComponents(components);
+        
         return components;
+    }
+    
+    // Sort components based on current sort option
+    sortComponents(components) {
+        const sortedComponents = [...components]; // Create a copy to avoid mutating original
+        
+        if (this.currentSort === 'downloads') {
+            // Sort by downloads (descending) - components with no downloads go to the end
+            sortedComponents.sort((a, b) => {
+                const downloadsA = a.downloads || 0;
+                const downloadsB = b.downloads || 0;
+                return downloadsB - downloadsA;
+            });
+        } else if (this.currentSort === 'alphabetical') {
+            // Sort alphabetically by name
+            sortedComponents.sort((a, b) => {
+                const nameA = (a.name || '').toLowerCase();
+                const nameB = (b.name || '').toLowerCase();
+                return nameA.localeCompare(nameB);
+            });
+        }
+        
+        return sortedComponents;
+    }
+    
+    // Handle sort change from the dropdown
+    handleSortChange(sortValue) {
+        this.currentSort = sortValue;
+        this.currentPage = 1; // Reset to first page when changing sort
+        this.displayCurrentFilter();
     }
 
     // Collect available categories from loaded components
@@ -221,6 +318,8 @@ class IndexPageManager {
         this.availableCategories.agents.clear();
         this.availableCategories.commands.clear();
         this.availableCategories.mcps.clear();
+        this.availableCategories.settings.clear();
+        this.availableCategories.hooks.clear();
         this.availableCategories.templates.clear();
         
         // Collect categories from each component type
@@ -242,6 +341,20 @@ class IndexPageManager {
             this.componentsData.mcps.forEach(component => {
                 const category = component.category || 'general';
                 this.availableCategories.mcps.add(category);
+            });
+        }
+        
+        if (this.componentsData.settings && Array.isArray(this.componentsData.settings)) {
+            this.componentsData.settings.forEach(component => {
+                const category = component.category || 'general';
+                this.availableCategories.settings.add(category);
+            });
+        }
+        
+        if (this.componentsData.hooks && Array.isArray(this.componentsData.hooks)) {
+            this.componentsData.hooks.forEach(component => {
+                const category = component.category || 'general';
+                this.availableCategories.hooks.add(category);
             });
         }
         
@@ -278,6 +391,8 @@ class IndexPageManager {
             case 'agents':
             case 'commands':
             case 'mcps':
+            case 'settings':
+            case 'hooks':
                 this.displayComponents(grid, this.currentFilter);
                 break;
             default:
@@ -313,6 +428,9 @@ class IndexPageManager {
                 return false;
             });
         }
+        
+        // Apply sorting to templates
+        filteredTemplates = this.sortComponents(filteredTemplates);
         
         // Create template cards from the filtered list
         filteredTemplates.forEach(template => {
@@ -376,8 +494,9 @@ class IndexPageManager {
     generateComponentCard(component) {
         // Generate install command - remove .md extension from path
         let componentPath = component.path || component.name;
-        if (componentPath.endsWith('.md')) {
-            componentPath = componentPath.replace(/\.md$/, '');
+        // Remove .md or .json extensions from path
+        if (componentPath.endsWith('.md') || componentPath.endsWith('.json')) {
+            componentPath = componentPath.replace(/\.(md|json)$/, '');
         }
         if (componentPath.endsWith('.json')) {
             componentPath = componentPath.replace(/\.json$/, '');
@@ -387,7 +506,9 @@ class IndexPageManager {
         const typeConfig = {
             agent: { icon: '🤖', color: '#ff6b6b' },
             command: { icon: '⚡', color: '#4ecdc4' },
-            mcp: { icon: '🔌', color: '#45b7d1' }
+            mcp: { icon: '🔌', color: '#45b7d1' },
+            setting: { icon: '⚙️', color: '#9c88ff' },
+            hook: { icon: '🪝', color: '#ff8c42' }
         };
         
         const config = typeConfig[component.type];
@@ -403,10 +524,20 @@ class IndexPageManager {
         const categoryName = component.category || 'general';
         const categoryLabel = `<div class="category-label">${this.formatComponentName(categoryName)}</div>`;
         
+        // Create download badge if downloads data exists
+        const downloadBadge = component.downloads && component.downloads > 0 ? 
+            `<div class="download-badge" title="${component.downloads} downloads">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/>
+                </svg>
+                ${this.formatNumber(component.downloads)}
+            </div>` : '';
+        
         return `
             <div class="template-card" data-type="${component.type}">
                 <div class="card-inner">
                     <div class="card-front">
+                        ${downloadBadge}
                         ${categoryLabel}
                         <div class="framework-logo" style="color: ${config.color}">
                             <span class="component-icon">${config.icon}</span>
@@ -420,13 +551,27 @@ class IndexPageManager {
                     <div class="card-back">
                         <div class="command-display">
                             <h3>Installation Command</h3>
-                            <div class="command-code">${installCommand}</div>
-                            <div class="action-buttons">
+                            <div class="command-code-container">
+                                <div class="command-code">${installCommand}</div>
+                                <button class="copy-overlay-btn" onclick="copyToClipboard('${escapedCommand}'); event.stopPropagation();" title="Copy command">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                                    </svg>
+                                    Copy Command
+                                </button>
+                            </div>
+                            <div class="card-actions">
                                 <button class="view-files-btn" onclick="showComponentDetails('${escapedType}', '${escapedName}', '${escapedPath}', '${escapedCategory}')">
                                     📁 View Details
                                 </button>
-                                <button class="copy-command-btn" onclick="copyToClipboard('${escapedCommand}')">
-                                    📋 Copy Command
+                                <button class="add-to-cart-btn" 
+                                        data-type="${component.type}s" 
+                                        data-path="${componentPath}"
+                                        onclick="handleAddToCart('${escapedName}', '${componentPath}', '${component.type}s', '${escapedCategory}', this)">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M19,7H18V6A2,2 0 0,0 16,4H8A2,2 0 0,0 6,6V7H5A1,1 0 0,0 4,8A1,1 0 0,0 5,9H6V19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V9H19A1,1 0 0,0 20,8A1,1 0 0,0 19,7M8,6H16V7H8V6M16,19H8V9H16V19Z"/>
+                                    </svg>
+                                    Add to Stack
                                 </button>
                             </div>
                         </div>
@@ -474,6 +619,15 @@ class IndexPageManager {
         return name.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
     }
 
+    formatNumber(num) {
+        if (num >= 1000000) {
+            return (num / 1000000).toFixed(1) + 'M';
+        } else if (num >= 1000) {
+            return (num / 1000).toFixed(1) + 'K';
+        }
+        return num.toString();
+    }
+
     truncateDescription(description, maxLength = 80) {
         if (!description) return '';
         if (description.length <= maxLength) return description;
@@ -514,30 +668,35 @@ class IndexPageManager {
 
     // Update filter button counts
     updateFilterCounts() {
-        if (!this.componentsData) return;
+        // Get accurate total counts from data loader (includes full data counts)
+        const totalCounts = window.dataLoader.getTotalCounts();
+        if (!totalCounts) return;
         
-        const agentsCount = this.componentsData.agents ? this.componentsData.agents.length : 0;
-        const commandsCount = this.componentsData.commands ? this.componentsData.commands.length : 0;
-        const mcpsCount = this.componentsData.mcps ? this.componentsData.mcps.length : 0;
-        const templatesCount = this.componentsData.templates ? this.componentsData.templates.length : 0;
-        
-        // Update each filter button with count
+        // Update each filter button with accurate total count
         const agentsBtn = document.querySelector('[data-filter="agents"]');
         const commandsBtn = document.querySelector('[data-filter="commands"]');
         const mcpsBtn = document.querySelector('[data-filter="mcps"]');
+        const settingsBtn = document.querySelector('[data-filter="settings"]');
+        const hooksBtn = document.querySelector('[data-filter="hooks"]');
         const templatesBtn = document.querySelector('[data-filter="templates"]');
         
         if (agentsBtn) {
-            agentsBtn.innerHTML = `🤖 Agents (${agentsCount})`;
+            agentsBtn.innerHTML = `🤖 Agents (${totalCounts.agents})`;
         }
         if (commandsBtn) {
-            commandsBtn.innerHTML = `⚡ Commands (${commandsCount})`;
+            commandsBtn.innerHTML = `⚡ Commands (${totalCounts.commands})`;
         }
         if (mcpsBtn) {
-            mcpsBtn.innerHTML = `🔌 MCPs (${mcpsCount})`;
+            mcpsBtn.innerHTML = `🔌 MCPs (${totalCounts.mcps})`;
+        }
+        if (settingsBtn) {
+            settingsBtn.innerHTML = `⚙️ Settings (${totalCounts.settings})`;
+        }
+        if (hooksBtn) {
+            hooksBtn.innerHTML = `🪝 Hooks (${totalCounts.hooks})`;
         }
         if (templatesBtn) {
-            templatesBtn.innerHTML = `📦 Templates (${templatesCount})`;
+            templatesBtn.innerHTML = `📦 Templates (${totalCounts.templates})`;
         }
     }
 
@@ -561,6 +720,18 @@ class IndexPageManager {
                 name: 'MCP', 
                 description: 'Build a Model Context Protocol integration',
                 color: '#45b7d1'
+            },
+            settings: { 
+                icon: '⚙️', 
+                name: 'Setting', 
+                description: 'Configure Claude Code behavior',
+                color: '#9c88ff'
+            },
+            hooks: { 
+                icon: '🪝', 
+                name: 'Hook', 
+                description: 'Automate tool execution workflows',
+                color: '#ff8c42'
             }
         };
         
@@ -857,11 +1028,215 @@ class IndexPageManager {
 
 // Global function for copying is now handled by utils.js
 
+// Global function for handling sort change (called from onchange)
+function handleSortChange(sortValue) {
+    if (window.indexManager) {
+        window.indexManager.handleSortChange(sortValue);
+    }
+}
+
+// Global function for handling filter click with navigation
+function handleFilterClick(event, filter) {
+    event.preventDefault(); // Prevent default link navigation
+    setUnifiedFilter(filter);
+}
+
 // Global function for setting filter (called from onclick)
 function setUnifiedFilter(filter) {
     if (window.indexManager) {
         window.indexManager.setFilter(filter);
     }
+    
+    // Update filter buttons - remove active from ALL filter buttons
+    document.querySelectorAll('.component-type-filters .filter-chip').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    
+    // Add active class only to the clicked filter button
+    const activeBtn = document.querySelector(`.component-type-filters [data-filter="${filter}"]`);
+    if (activeBtn) {
+        activeBtn.classList.add('active');
+    }
+    
+    console.log('Component type filter selected:', filter);
+    
+    // Update URL with filter parameter
+    if (typeof updateURLWithFilter === 'function') {
+        updateURLWithFilter(filter);
+    }
+    
+    // Show category filters for the selected component type
+    showCategoryFilters(filter);
+}
+
+// Function to show category filters based on component type
+function showCategoryFilters(componentType) {
+    const categoryContainer = document.getElementById('componentCategories');
+    const categoryChips = document.getElementById('categoryChips');
+    
+    if (!categoryContainer || !categoryChips) return;
+    
+    // Get categories from actual component data
+    let categories = [];
+    
+    if (window.dataLoader) {
+        const dataLoader = window.dataLoader;
+        
+        console.log('DataLoader available, getting categories for:', componentType);
+        console.log('DataLoader componentsData:', dataLoader.componentsData);
+        
+        switch(componentType) {
+            case 'agents':
+                const agents = dataLoader.getComponentsByType('agent');
+                console.log('Agents data:', agents);
+                categories = getUniqueCategories(agents);
+                break;
+            case 'commands':
+                const commands = dataLoader.getComponentsByType('command');
+                console.log('Commands data:', commands);
+                categories = getUniqueCategories(commands);
+                break;
+            case 'settings':
+                try {
+                    categories = dataLoader.getSettingCategories ? dataLoader.getSettingCategories() : getUniqueCategories(dataLoader.getSettings());
+                } catch (e) {
+                    const settings = dataLoader.getComponentsByType('setting') || dataLoader.getSettings();
+                    categories = getUniqueCategories(settings);
+                }
+                break;
+            case 'hooks':
+                try {
+                    categories = dataLoader.getHookCategories ? dataLoader.getHookCategories() : getUniqueCategories(dataLoader.getHooks());
+                } catch (e) {
+                    const hooks = dataLoader.getComponentsByType('hook') || dataLoader.getHooks();
+                    categories = getUniqueCategories(hooks);
+                }
+                break;
+            case 'mcps':
+                const mcps = dataLoader.getComponentsByType('mcp');
+                console.log('MCPs data:', mcps);
+                categories = getUniqueCategories(mcps);
+                break;
+            case 'templates':
+                const templates = dataLoader.getComponentsByType('template');
+                console.log('Templates data:', templates);
+                categories = getUniqueCategories(templates);
+                break;
+            default:
+                categories = [];
+        }
+        
+        console.log('Found categories for', componentType, ':', categories);
+    } else {
+        console.log('DataLoader not available yet');
+    }
+    
+    // Add "All" option at the beginning
+    if (categories.length > 0) {
+        categories.unshift('All');
+    }
+    
+    if (categories.length > 0) {
+        categoryChips.innerHTML = categories.map((category, index) => {
+            const displayName = formatCategoryName(category);
+            // Only the first item (All) should be active by default
+            const isActive = index === 0 ? 'active' : '';
+            return `
+                <button class="filter-chip ${isActive}" data-category="${category.toLowerCase()}" onclick="setCategoryFilter('${category.toLowerCase()}')">
+                    ${displayName}
+                </button>
+            `;
+        }).join('');
+        
+        categoryContainer.style.display = 'block';
+    } else {
+        categoryContainer.style.display = 'none';
+    }
+}
+
+// Helper function to extract unique categories from component data
+function getUniqueCategories(components) {
+    if (!components || !Array.isArray(components)) return [];
+    
+    const categories = new Set();
+    components.forEach(component => {
+        if (component.category && component.category.trim() !== '') {
+            categories.add(component.category);
+        }
+    });
+    
+    return Array.from(categories).sort();
+}
+
+// Helper function to format category names for display
+function formatCategoryName(category) {
+    if (category === 'All') return 'All';
+    
+    // Convert category names to proper case
+    return category
+        .split(/[-_\s]+/)
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join(' ');
+}
+
+// Function to handle category filter selection
+// Enhanced setCategoryFilter function that handles both old and new category systems
+window.setCategoryFilter = function setCategoryFilter(category) {
+    console.log('setCategoryFilter called with:', category);
+    
+    // Handle the new category chips in #categoryChips
+    const categoryButtons = document.querySelectorAll('#categoryChips button.filter-chip');
+    if (categoryButtons.length > 0) {
+        console.log('Found new category buttons:', categoryButtons.length);
+        
+        categoryButtons.forEach((btn, index) => {
+            console.log(`Button ${index}:`, btn.getAttribute('data-category'), 'has active:', btn.classList.contains('active'));
+            btn.classList.remove('active');
+        });
+        
+        // Add active class only to the clicked button
+        const activeBtn = document.querySelector(`#categoryChips button[data-category="${category}"]`);
+        console.log('Target button found:', activeBtn);
+        
+        if (activeBtn) {
+            activeBtn.classList.add('active');
+            console.log('Added active class to:', category);
+        }
+    }
+    
+    // Also call the existing IndexManager setCategoryFilter method for actual filtering
+    if (window.indexManager && window.indexManager.setCategoryFilter) {
+        console.log('Calling IndexManager setCategoryFilter with:', category);
+        window.indexManager.setCategoryFilter(category);
+    }
+    
+    // Force re-render of the current filter to apply category filtering
+    if (window.indexManager && window.indexManager.displayCurrentFilter) {
+        console.log('Re-displaying current filter to apply category filter');
+        window.indexManager.displayCurrentFilter();
+    }
+}
+
+// Test function to debug category filters
+window.testCategoryFilter = function() {
+    console.log('=== Category Filter Debug ===');
+    const categoryChips = document.getElementById('categoryChips');
+    console.log('Category chips container:', categoryChips);
+    
+    if (categoryChips) {
+        const buttons = categoryChips.querySelectorAll('button.filter-chip');
+        console.log('Found buttons:', buttons.length);
+        
+        buttons.forEach((btn, index) => {
+            console.log(`Button ${index}:`, {
+                category: btn.getAttribute('data-category'),
+                hasActive: btn.classList.contains('active'),
+                onclick: btn.getAttribute('onclick')
+            });
+        });
+    }
+    
+    console.log('setCategoryFilter function exists:', typeof window.setCategoryFilter);
 }
 
 // Global helper functions for template cards
@@ -949,11 +1324,7 @@ function showTemplateDetails(templateId, templateName, subtype) {
 }
 
 // Global function for setting category filter (called from onclick)
-function setCategoryFilter(category) {
-    if (window.indexManager) {
-        window.indexManager.setCategoryFilter(category);
-    }
-}
+// setCategoryFilter function is now defined globally above as window.setCategoryFilter
 
 // Show component contribute modal (copied from script.js)
 function showComponentContributeModal(type) {
@@ -975,6 +1346,18 @@ function showComponentContributeModal(type) {
             description: 'Model Context Protocol integration',
             example: 'redis-integration',
             structure: '- MCP server configuration\n- Connection parameters\n- Environment variables\n- Usage examples'
+        },
+        settings: { 
+            name: 'Setting', 
+            description: 'Claude Code configuration setting',
+            example: 'custom-model-config',
+            structure: '- Setting description\n- Configuration options\n- Environment variables\n- Usage examples and best practices'
+        },
+        hooks: { 
+            name: 'Hook', 
+            description: 'Automation hook for tool execution',
+            example: 'format-on-save',
+            structure: '- Hook description and trigger\n- Command to execute\n- PreToolUse or PostToolUse configuration\n- Error handling and examples'
         },
         templates: { 
             name: 'Template', 
@@ -1181,7 +1564,7 @@ function showComponentContributeModal(type) {
                                         <pre>${config.structure}</pre>
                                     </div>
                                     <div class="step-command">
-                                        <strong>Example filename:</strong> <code>${config.example}.${type === 'mcps' ? 'json' : 'md'}</code>
+                                        <strong>Example filename:</strong> <code>${config.example}.${(type === 'mcps' || type === 'settings' || type === 'hooks') ? 'json' : 'md'}</code>
                                     </div>
                                 </div>
                             </div>
@@ -1217,8 +1600,8 @@ function showComponentContributeModal(type) {
                                     <h4>Submit Pull Request</h4>
                                     <p>Submit your contribution with proper documentation:</p>
                                     <div class="step-command">
-                                        <code>git add cli-tool/components/${type}/${config.example}.${type === 'mcps' ? 'json' : 'md'}</code>
-                                        <button class="copy-btn" onclick="copyToClipboard('git add cli-tool/components/${type}/${config.example}.${type === 'mcps' ? 'json' : 'md'}')">Copy</button>
+                                        <code>git add cli-tool/components/${type}/${config.example}.${(type === 'mcps' || type === 'settings' || type === 'hooks') ? 'json' : 'md'}</code>
+                                        <button class="copy-btn" onclick="copyToClipboard('git add cli-tool/components/${type}/${config.example}.${(type === 'mcps' || type === 'settings' || type === 'hooks') ? 'json' : 'md'}')">Copy</button>
                                     </div>
                                     <div class="step-command">
                                         <code>git commit -m "feat: Add ${config.example} ${config.name.toLowerCase()}"</code>
@@ -1287,8 +1670,143 @@ function goToPage(page) {
     }
 }
 
+// Clean component name by removing extensions and formatting
+function getCleanComponentName(name) {
+    if (!name) {
+        return 'Unknown Component';
+    }
+    
+    let cleanName = name;
+    
+    // Remove .md extension if present
+    if (cleanName.endsWith('.md')) {
+        cleanName = cleanName.slice(0, -3);
+    }
+    
+    // Remove .json extension if present
+    if (cleanName.endsWith('.json')) {
+        cleanName = cleanName.slice(0, -5);
+    }
+    
+    // Convert kebab-case or snake_case to Title Case
+    cleanName = cleanName
+        .replace(/[-_]/g, ' ')
+        .split(' ')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join(' ');
+        
+    return cleanName;
+}
+
+// Handle Add to Cart button click
+function handleAddToCart(name, path, type, category, buttonElement) {
+    // Prevent event propagation to avoid card flip
+    if (window.event) {
+        window.event.stopPropagation();
+    }
+    
+    // Clean the component name for better display
+    const cleanName = getCleanComponentName(name);
+    
+    const item = {
+        name: cleanName,
+        path: path,
+        category: category,
+        description: `${cleanName} - ${category}`
+    };
+    
+    // Add to cart using the cart manager
+    const success = addToCart(item, type);
+    
+    if (success) {
+        // Update button state
+        buttonElement.classList.add('added');
+        buttonElement.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M9,20.42L2.79,14.21L5.62,11.38L9,14.77L18.88,4.88L21.71,7.71L9,20.42Z"/>
+            </svg>
+            Added to Stack
+        `;
+        
+        // Show a brief animation
+        buttonElement.style.transform = 'scale(0.95)';
+        setTimeout(() => {
+            buttonElement.style.transform = 'scale(1)';
+        }, 150);
+        
+        // Show notification (the cart manager already handles this, but we can add extra visual feedback)
+        console.log(`✅ ${name} added to stack successfully!`);
+    }
+}
+
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
     window.indexManager = new IndexPageManager();
     window.indexManager.init();
+    
+    // Initialize category filters for default selection (agents)
+    // Wait for components to load, then show categories
+    const initCategories = () => {
+        if (window.dataLoader && window.dataLoader.componentsData) {
+            showCategoryFilters('agents');
+        } else {
+            setTimeout(initCategories, 200);
+        }
+    };
+    
+    setTimeout(initCategories, 100);
+    
+    // Focus search input on page load and setup terminal cursor
+    setTimeout(() => {
+        const searchInput = document.getElementById('searchInput');
+        if (searchInput) {
+            searchInput.focus();
+            setupTerminalCursor();
+        }
+    }, 300); // Small delay to ensure DOM is fully loaded
 });
+
+// Terminal cursor functionality
+function setupTerminalCursor() {
+    const searchInput = document.getElementById('searchInput');
+    const cursor = document.getElementById('terminalCursor');
+    
+    if (!searchInput || !cursor) return;
+    
+    function updateCursorPosition() {
+        const promptWidth = 26; // Width of ">" prompt + extra space
+        
+        // If input has text, position cursor at the end of the text
+        if (searchInput.value.length > 0) {
+            // Create a temporary span to measure text width
+            const temp = document.createElement('span');
+            temp.style.visibility = 'hidden';
+            temp.style.position = 'absolute';
+            temp.style.whiteSpace = 'pre';
+            temp.style.font = window.getComputedStyle(searchInput).font;
+            temp.textContent = searchInput.value;
+            
+            document.body.appendChild(temp);
+            const textWidth = temp.getBoundingClientRect().width;
+            document.body.removeChild(temp);
+            
+            cursor.style.left = `${promptWidth + textWidth + 2}px`;
+        } else {
+            // If input is empty, position cursor right after the prompt with space
+            cursor.style.left = `${promptWidth}px`;
+        }
+    }
+    
+    // Update cursor position on input
+    searchInput.addEventListener('input', updateCursorPosition);
+    searchInput.addEventListener('focus', () => {
+        cursor.style.display = 'block';
+        updateCursorPosition();
+    });
+    searchInput.addEventListener('blur', () => {
+        cursor.style.display = 'none';
+    });
+    
+    // Initial position
+    updateCursorPosition();
+}
